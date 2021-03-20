@@ -1,10 +1,16 @@
 package fallback
 
 import (
+	"reflect"
+	"strings"
+	"sync"
+
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
-	"strings"
+	"google.golang.org/grpc/grpclog"
 )
+
+var logger = grpclog.Component("core")
 
 type serviceInfo struct {
 	serviceImpl interface{}
@@ -13,7 +19,9 @@ type serviceInfo struct {
 	mdata       interface{}
 }
 
+// refer to https://github.com/grpc/grpc-go/blob/bce1cded4b05db45e02a87b94b75fa5cb07a76a5/server.go
 type RouteHandler struct {
+	mu       sync.Mutex
 	services map[string]*serviceInfo
 }
 
@@ -24,7 +32,22 @@ func NewRouteHandler() *RouteHandler {
 }
 
 func (rh *RouteHandler) RegisterService(sd *grpc.ServiceDesc, ss interface{}) {
-	// TODO: type implement check
+	if ss != nil {
+		ht := reflect.TypeOf(sd.HandlerType).Elem()
+		st := reflect.TypeOf(ss)
+		if !st.Implements(ht) {
+			logger.Fatalf("grpc: Server.RegisterService found the handler of type %v that does not satisfy %v", st, ht)
+		}
+	}
+	rh.register(sd, ss)
+}
+
+func (rh *RouteHandler) register(sd *grpc.ServiceDesc, ss interface{}) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	if _, ok := rh.services[sd.ServiceName]; ok {
+		logger.Fatalf("grpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
+	}
 	info := &serviceInfo{
 		serviceImpl: ss,
 		methods:     make(map[string]*grpc.MethodDesc),
@@ -55,21 +78,6 @@ func parseName(sm string) (string, string, error) {
 	return sm[:pos], sm[pos+1:], nil
 }
 
-func processUnaryRPC(stream grpc.ServerStream, info *serviceInfo, md *grpc.MethodDesc) error {
-	df := func(v interface{}) error {
-		return stream.RecvMsg(v)
-	}
-	result, err := md.Handler(info.serviceImpl, stream.Context(), df, nil)
-	if err != nil {
-		return err
-	}
-	return stream.SendMsg(result)
-}
-
-func processStreamingRPC(stream grpc.ServerStream, info *serviceInfo, sd *grpc.StreamDesc) error {
-	return sd.Handler(info.serviceImpl, stream)
-}
-
 func (rh *RouteHandler) Handle(srv interface{}, stream grpc.ServerStream) error {
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
@@ -96,4 +104,20 @@ func (rh *RouteHandler) Handle(srv interface{}, stream grpc.ServerStream) error 
 	} else {
 		return errors.Errorf("unknown method %v for service %v", method, service)
 	}
+}
+
+// refer to https://github.com/grpc/grpc-go/issues/1801#issuecomment-358379067
+func processUnaryRPC(stream grpc.ServerStream, info *serviceInfo, md *grpc.MethodDesc) error {
+	df := func(v interface{}) error {
+		return stream.RecvMsg(v)
+	}
+	result, err := md.Handler(info.serviceImpl, stream.Context(), df, nil)
+	if err != nil {
+		return err
+	}
+	return stream.SendMsg(result)
+}
+
+func processStreamingRPC(stream grpc.ServerStream, info *serviceInfo, sd *grpc.StreamDesc) error {
+	return sd.Handler(info.serviceImpl, stream)
 }
