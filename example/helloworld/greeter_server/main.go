@@ -21,8 +21,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"github.com/dubbo-x/fallback/pkg/fallback"
 	"log"
 	"net"
 	"time"
@@ -30,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/dubbo-x/fallback/example/helloworld/helloworld"
+	"github.com/dubbo-x/fallback/pkg/fallback"
 )
 
 const (
@@ -49,20 +48,17 @@ func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloRe
 
 func main() {
 	rh := fallback.NewRouteHandler()
-
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer(grpc.UnknownServiceHandler(rh.Handle))
 	go func() {
-		if err := s.Serve(lis); err != nil {
-			log.Fatalf("failed to serve: %v", err)
-		}
+		time.Sleep(25 * time.Second)
+		pb.RegisterGreeterServer(rh, &server{})  // register service after server start
+		log.Println("register service finish")
 	}()
-
-	time.Sleep(15 * time.Second)
-	pb.RegisterGreeterServer(rh, &server{})  // register service after server start
-	fmt.Println("ok")
-	time.Sleep(1000 * time.Second)
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
 }
